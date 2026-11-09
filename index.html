@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Attack Map — живая карта алертов</title>
+<style>
+  :root {
+    --bg: #0b0d12; --panel: #14171f; --line: #232836;
+    --text: #e8ebf2; --dim: #8b93a7; --accent: #ff7a1a;
+    --high: #ff4d4f; --med: #ffa940; --low: #36cfc9;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
+         height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+           border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; font-weight: 600; letter-spacing: .3px; }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
+                box-shadow: 0 0 12px var(--accent); animation: pulse 2s infinite; }
+  @keyframes pulse { 50% { opacity: .4; } }
+  header .stat { margin-left: auto; color: var(--dim); font-size: 13px; }
+  header .stat b { color: var(--text); font-size: 16px; }
+  main { flex: 1; display: grid; grid-template-columns: 380px 1fr 320px;
+         gap: 12px; padding: 12px 20px; min-height: 0; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 14px; padding: 14px; overflow: auto; min-height: 0; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px;
+              color: var(--dim); margin-bottom: 10px; }
+  #radar-wrap { display: flex; flex-direction: column; }
+  #radar { flex: 1; width: 100%; min-height: 0; }
+  .event { padding: 8px 10px; border-left: 3px solid var(--line); margin-bottom: 8px;
+           background: #10131b; border-radius: 0 8px 8px 0; }
+  .event.p3 { border-color: var(--high); }
+  .event.p2 { border-color: var(--med); }
+  .event.p1 { border-color: var(--low); }
+  .event .t { font-size: 11px; color: var(--dim); }
+  .event .m { font-size: 13px; font-weight: 550; }
+  .event .d { font-size: 11.5px; color: var(--dim); margin-top: 2px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .event.new { animation: flash 1.2s; }
+  @keyframes flash { 0% { background: #2a2410; } }
+  .bar-row { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 12.5px; }
+  .bar-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .bar { height: 8px; border-radius: 4px; background: var(--accent); min-width: 4px; }
+  .bar-row .n { color: var(--dim); width: 26px; text-align: right; }
+  .prio-cards { display: flex; gap: 8px; margin-bottom: 14px; }
+  .prio { flex: 1; border-radius: 10px; padding: 8px 10px; background: #10131b;
+          border: 1px solid var(--line); text-align: center; }
+  .prio b { display: block; font-size: 20px; }
+  .prio.h b { color: var(--high); } .prio.m b { color: var(--med); } .prio.l b { color: var(--low); }
+  .prio span { font-size: 10.5px; color: var(--dim); text-transform: uppercase; }
+  .node-row { display: flex; justify-content: space-between; font-size: 12.5px;
+              padding: 4px 2px; border-bottom: 1px dashed #1c2130; }
+  .node-row .c { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div class="dot"></div>
+  <h1>Attack Map — живая карта алертов</h1>
+  <div class="stat">за 24 часа: <b id="total24">–</b> &nbsp;·&nbsp; <span id="clock"></span></div>
+</header>
+<main>
+  <section class="panel" id="feed-panel">
+    <h2>Поток алертов</h2>
+    <div id="feed"></div>
+  </section>
+  <section class="panel" id="radar-wrap">
+    <h2>Карта источников</h2>
+    <canvas id="radar"></canvas>
+  </section>
+  <section class="panel">
+    <h2>Приоритеты за 24 ч</h2>
+    <div class="prio-cards">
+      <div class="prio h"><b id="p3">0</b><span>High</span></div>
+      <div class="prio m"><b id="p2">0</b><span>Medium</span></div>
+      <div class="prio l"><b id="p1">0</b><span>Low</span></div>
+    </div>
+    <h2>Топ правил за 24 ч</h2>
+    <div id="top"></div>
+    <h2 style="margin-top:14px">Источники за 24 ч</h2>
+    <div id="nodes"></div>
+  </section>
+</main>
+<script>
+const canvas = document.getElementById('radar');
+const ctx = canvas.getContext('2d');
+let nodes = [], arcs = [], lastTopId = null;
+
+function resize() {
+  const r = canvas.getBoundingClientRect();
+  canvas.width = r.width * devicePixelRatio;
+  canvas.height = r.height * devicePixelRatio;
+}
+addEventListener('resize', resize); resize();
+
+function layoutNodes(list) {
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  const R = Math.min(cx, cy) * 0.72;
+  nodes = list.map((n, i) => {
+    const a = -Math.PI / 2 + i * 2 * Math.PI / list.length;
+    return {...n, x: cx + R * Math.cos(a), y: cy + R * Math.sin(a)};
+  });
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  // круги радара
+  ctx.strokeStyle = '#1d2331'; ctx.lineWidth = 1;
+  for (const k of [0.25, 0.5, 0.75, 1]) {
+    ctx.beginPath();
+    ctx.arc(cx, cy, Math.min(cx, cy) * 0.72 * k, 0, 7);
+    ctx.stroke();
+  }
+  // центр
+  ctx.fillStyle = '#ff7a1a';
+  ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = 18;
+  ctx.beginPath(); ctx.arc(cx, cy, 7 * devicePixelRatio, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#8b93a7'; ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('Graylog', cx, cy + 22 * devicePixelRatio);
+  // дуги алертов
+  arcs = arcs.filter(a => Date.now() - a.t0 < 2500);
+  for (const a of arcs) {
+    const k = (Date.now() - a.t0) / 2500;
+    const x = a.from.x + (cx - a.from.x) * k, y = a.from.y + (cy - a.from.y) * k;
+    ctx.strokeStyle = a.color + '55'; ctx.lineWidth = 1.5 * devicePixelRatio;
+    ctx.beginPath(); ctx.moveTo(a.from.x, a.from.y); ctx.lineTo(x, y); ctx.stroke();
+    ctx.fillStyle = a.color;
+    ctx.shadowColor = a.color; ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.arc(x, y, 4 * devicePixelRatio, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  // узлы
+  for (const n of nodes) {
+    const hot = Date.now() - (n.last || 0) < 2500;
+    ctx.fillStyle = hot ? '#ff7a1a' : '#2a3040';
+    ctx.beginPath(); ctx.arc(n.x, n.y, (hot ? 10 : 7) * devicePixelRatio, 0, 7); ctx.fill();
+    ctx.fillStyle = hot ? '#ffd8b0' : '#aab2c5';
+    ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+    ctx.fillText(`${n.node} (${n.count})`, n.x, n.y - 14 * devicePixelRatio);
+  }
+  requestAnimationFrame(draw);
+}
+draw();
+
+const PRIO_COLOR = {3: '#ff4d4f', 2: '#ffa940', 1: '#36cfc9'};
+
+async function poll() {
+  try {
+    const d = await (await fetch('/api/overview')).json();
+    document.getElementById('total24').textContent = d.total24;
+    document.getElementById('clock').textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU');
+    document.getElementById('p3').textContent = d.prio24['3'] || 0;
+    document.getElementById('p2').textContent = d.prio24['2'] || 0;
+    document.getElementById('p1').textContent = d.prio24['1'] || 0;
+
+    const feed = document.getElementById('feed');
+    const freshId = d.feed[0] ? d.feed[0].ts + d.feed[0].title : null;
+    const isNew = lastTopId !== null && freshId !== lastTopId;
+    feed.innerHTML = d.feed.map(e => `
+      <div class="event p${e.prio}">
+        <div class="t">${new Date(e.ts).toLocaleString('ru-RU')}</div>
+        <div class="m">${esc(e.title)}</div>
+        ${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ''}
+      </div>`).join('') || '<div style="color:var(--dim)">алертов нет — тишина</div>';
+
+    const maxTop = Math.max(1, ...d.top24.map(t => t.count));
+    document.getElementById('top').innerHTML = d.top24.map(t => `
+      <div class="bar-row"><span class="name">${esc(t.rule)}</span>
+      <span class="bar" style="width:${Math.round(t.count / maxTop * 90)}px"></span>
+      <span class="n">${t.count}</span></div>`).join('') || '<div style="color:var(--dim)">—</div>';
+    document.getElementById('nodes').innerHTML = d.nodes24.map(n => `
+      <div class="node-row"><span>${esc(n.node)}</span><span class="c">${n.count}</span></div>`).join('');
+
+    layoutNodes(d.nodes24.length ? d.nodes24 : [{node: '—', count: 0}]);
+    if (isNew && d.feed[0]) {
+      const node = nodes.find(n => n.node === d.feed[0].node);
+      if (node) {
+        node.last = Date.now();
+        arcs.push({from: node, t0: Date.now(), color: PRIO_COLOR[d.feed[0].prio] || '#ff7a1a'});
+      }
+      const first = feed.querySelector('.event');
+      if (first) first.classList.add('new');
+    }
+    lastTopId = freshId;
+  } catch (e) { /* Graylog недоступен — пробуем дальше */ }
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+poll(); setInterval(poll, 10000);
+</script>
+</body>
+</html>

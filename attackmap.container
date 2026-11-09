@@ -1,0 +1,15 @@
+[Unit]
+Description=Attack Map — живая карта алертов Graylog
+After=network-online.target
+
+[Container]
+Image=localhost/attackmap:latest
+PublishPort=8097:8097
+Environment=GRAYLOG_URL=http://host.containers.internal:9000
+EnvironmentFile=-%h/attackmap/attackmap.env
+
+[Service]
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
