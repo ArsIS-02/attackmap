@@ -57,12 +57,15 @@ def normalize(raw):
             continue
         title = ev.get("message", "")
         node = title.split(" - ")[0].split(":")[0].strip() or "Прочее"
+        fields = ev.get("fields") or {}
         out.append({
             "ts": ts_ms,
             "prio": int(ev.get("priority", 2)),
             "title": title,
-            "detail": (ev.get("fields") or {}).get("event", "")[:220],
+            "detail": (fields.get("event") or "")[:220],
             "node": node,
+            "ioc": fields.get("ioc") or "",
+            "ioc_type": fields.get("ioc_type") or "",
         })
     return out
 
