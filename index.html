@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Attack Map — живая карта алертов</title>
 <style>
   :root {
@@ -14,12 +15,11 @@
   body { background: var(--bg); color: var(--text);
          font: 14px/1.5 -apple-system, "SF Pro Text", "Segoe UI", sans-serif;
          height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+  header { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
            border-bottom: 1px solid var(--line); }
+  header img.logo { width: 30px; height: 30px; border-radius: 8px;
+                    box-shadow: 0 0 14px rgba(255,122,26,.35); }
   header h1 { font-size: 17px; font-weight: 600; letter-spacing: .3px; }
-  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent);
-                box-shadow: 0 0 12px var(--accent); animation: pulse 2s infinite; }
-  @keyframes pulse { 50% { opacity: .4; } }
   header .stat { margin-left: auto; color: var(--dim); font-size: 13px; }
   header .stat b { color: var(--text); font-size: 16px; }
   main { flex: 1; display: grid; grid-template-columns: 380px 1fr 320px;
@@ -28,8 +28,20 @@
            border-radius: 14px; padding: 14px; overflow: auto; min-height: 0; }
   .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px;
               color: var(--dim); margin-bottom: 10px; }
-  #radar-wrap { display: flex; flex-direction: column; }
+  #radar-wrap { display: flex; flex-direction: column; overflow: hidden; }
   #radar { flex: 1; width: 100%; min-height: 0; }
+  .controls { border-top: 1px solid var(--line); padding-top: 10px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .chips button, .scrub button {
+      background: #10131b; border: 1px solid var(--line); color: var(--dim);
+      border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .chips button.active { color: var(--accent); border-color: var(--accent); }
+  .chips button:hover, .scrub button:hover { color: var(--text); }
+  .scrub { display: flex; align-items: center; gap: 10px; }
+  .scrub input[type=range] { flex: 1; accent-color: var(--accent); }
+  .scrub #tlabel { font-size: 11.5px; color: var(--dim); white-space: nowrap;
+                   min-width: 128px; text-align: right; }
+  .scrub #live.on { color: var(--accent); border-color: var(--accent); }
   .event { padding: 8px 10px; border-left: 3px solid var(--line); margin-bottom: 8px;
            background: #10131b; border-radius: 0 8px 8px 0; }
   .event.p3 { border-color: var(--high); }
@@ -58,9 +70,9 @@
 </head>
 <body>
 <header>
-  <div class="dot"></div>
+  <img class="logo" src="/favicon.svg" alt="Attack Map">
   <h1>Attack Map — живая карта алертов</h1>
-  <div class="stat">за 24 часа: <b id="total24">–</b> &nbsp;·&nbsp; <span id="clock"></span></div>
+  <div class="stat"><span id="range-label">24 ч</span>: <b id="total">–</b> &nbsp;·&nbsp; <span id="clock"></span></div>
 </header>
 <main>
   <section class="panel" id="feed-panel">
@@ -68,26 +80,49 @@
     <div id="feed"></div>
   </section>
   <section class="panel" id="radar-wrap">
-    <h2>Карта источников</h2>
+    <h2>Радар источников</h2>
     <canvas id="radar"></canvas>
+    <div class="controls">
+      <div class="chips" id="chips"></div>
+      <div class="scrub">
+        <button id="play" title="Проиграть хронологию">▶</button>
+        <input type="range" id="slider" min="0" max="1000" value="1000">
+        <span id="tlabel"></span>
+        <button id="live" class="on" title="Вернуться в эфир">Эфир</button>
+      </div>
+    </div>
   </section>
   <section class="panel">
-    <h2>Приоритеты за 24 ч</h2>
+    <h2>Приоритеты</h2>
     <div class="prio-cards">
       <div class="prio h"><b id="p3">0</b><span>High</span></div>
       <div class="prio m"><b id="p2">0</b><span>Medium</span></div>
       <div class="prio l"><b id="p1">0</b><span>Low</span></div>
     </div>
-    <h2>Топ правил за 24 ч</h2>
+    <h2>Топ правил</h2>
     <div id="top"></div>
-    <h2 style="margin-top:14px">Источники за 24 ч</h2>
+    <h2 style="margin-top:14px">Источники</h2>
     <div id="nodes"></div>
   </section>
 </main>
 <script>
+const PRIO_COLOR = {3: '#ff4d4f', 2: '#ffa940', 1: '#36cfc9'};
+const RANGES = [[1,'1 ч'],[3,'3 ч'],[6,'6 ч'],[12,'12 ч'],[24,'24 ч'],[48,'2 сут'],[72,'3 сут']];
+const SWEEP_MS = 5000;          // полный оборот луча в эфире
+const REPLAY_MS = 15000;        // полный прогон окна в режиме истории
+
+const state = { hours: 24, events: [], nowMs: Date.now(),
+                mode: 'live', T: Date.now(), playing: false };
+let nodeAngles = {};            // имя узла -> угол (по часовой от 12:00, рад)
+let nodes = [];                 // {name, angle, x, y, glow}
+let lastTopId = null, dirtyUI = true;
+
 const canvas = document.getElementById('radar');
 const ctx = canvas.getContext('2d');
-let nodes = [], arcs = [], lastTopId = null;
+const slider = document.getElementById('slider');
+const tlabel = document.getElementById('tlabel');
+const playBtn = document.getElementById('play');
+const liveBtn = document.getElementById('live');
 
 function resize() {
   const r = canvas.getBoundingClientRect();
@@ -96,102 +131,248 @@ function resize() {
 }
 addEventListener('resize', resize); resize();
 
-function layoutNodes(list) {
-  const cx = canvas.width / 2, cy = canvas.height / 2;
-  const R = Math.min(cx, cy) * 0.72;
-  nodes = list.map((n, i) => {
-    const a = -Math.PI / 2 + i * 2 * Math.PI / list.length;
-    return {...n, x: cx + R * Math.cos(a), y: cy + R * Math.sin(a)};
-  });
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function hash(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; }
+
+function winStart() { return state.nowMs - state.hours * 3600000; }
+function fracOf(ts) { return (ts - winStart()) / (state.nowMs - winStart()); }
+function curT() { return state.mode === 'live' ? Date.now() : state.T; }
+
+// стабильные углы узлов: по алфавиту, равномерно по окружности
+function rebuildNodes() {
+  const names = [...new Set(state.events.map(e => e.node))].sort();
+  if (!names.length) names.push('—');
+  nodeAngles = {};
+  names.forEach((n, i) => nodeAngles[n] = i * 2 * Math.PI / names.length);
+  nodes = names.map(n => ({ name: n, angle: nodeAngles[n], glow: 0 }));
+  for (const e of state.events) {
+    const h = hash(e.title + e.ts);
+    e.angle = nodeAngles[e.node];
+    e.jitA = ((h & 255) / 255 - 0.5) * 0.10;      // небольшой разброс по углу
+    e.jitR = 0.86 + (((h >> 8) & 255) / 255) * 0.24; // и по радиусу
+  }
 }
 
-function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const cx = canvas.width / 2, cy = canvas.height / 2;
-  // круги радара
-  ctx.strokeStyle = '#1d2331'; ctx.lineWidth = 1;
-  for (const k of [0.25, 0.5, 0.75, 1]) {
-    ctx.beginPath();
-    ctx.arc(cx, cy, Math.min(cx, cy) * 0.72 * k, 0, 7);
-    ctx.stroke();
-  }
-  // центр
-  ctx.fillStyle = '#ff7a1a';
-  ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = 18;
-  ctx.beginPath(); ctx.arc(cx, cy, 7 * devicePixelRatio, 0, 7); ctx.fill();
-  ctx.shadowBlur = 0;
-  ctx.fillStyle = '#8b93a7'; ctx.font = `${11 * devicePixelRatio}px sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('Graylog', cx, cy + 22 * devicePixelRatio);
-  // дуги алертов
-  arcs = arcs.filter(a => Date.now() - a.t0 < 2500);
-  for (const a of arcs) {
-    const k = (Date.now() - a.t0) / 2500;
-    const x = a.from.x + (cx - a.from.x) * k, y = a.from.y + (cy - a.from.y) * k;
-    ctx.strokeStyle = a.color + '55'; ctx.lineWidth = 1.5 * devicePixelRatio;
-    ctx.beginPath(); ctx.moveTo(a.from.x, a.from.y); ctx.lineTo(x, y); ctx.stroke();
-    ctx.fillStyle = a.color;
-    ctx.shadowColor = a.color; ctx.shadowBlur = 12;
-    ctx.beginPath(); ctx.arc(x, y, 4 * devicePixelRatio, 0, 7); ctx.fill();
-    ctx.shadowBlur = 0;
-  }
-  // узлы
-  for (const n of nodes) {
-    const hot = Date.now() - (n.last || 0) < 2500;
-    ctx.fillStyle = hot ? '#ff7a1a' : '#2a3040';
-    ctx.beginPath(); ctx.arc(n.x, n.y, (hot ? 10 : 7) * devicePixelRatio, 0, 7); ctx.fill();
-    ctx.fillStyle = hot ? '#ffd8b0' : '#aab2c5';
-    ctx.font = `${11 * devicePixelRatio}px sans-serif`;
-    ctx.fillText(`${n.node} (${n.count})`, n.x, n.y - 14 * devicePixelRatio);
-  }
-  requestAnimationFrame(draw);
-}
-draw();
-
-const PRIO_COLOR = {3: '#ff4d4f', 2: '#ffa940', 1: '#36cfc9'};
-
+// ---------- данные ----------
 async function poll() {
   try {
-    const d = await (await fetch('/api/overview')).json();
-    document.getElementById('total24').textContent = d.total24;
-    document.getElementById('clock').textContent = 'обновлено ' + new Date().toLocaleTimeString('ru-RU');
-    document.getElementById('p3').textContent = d.prio24['3'] || 0;
-    document.getElementById('p2').textContent = d.prio24['2'] || 0;
-    document.getElementById('p1').textContent = d.prio24['1'] || 0;
-
-    const feed = document.getElementById('feed');
-    const freshId = d.feed[0] ? d.feed[0].ts + d.feed[0].title : null;
-    const isNew = lastTopId !== null && freshId !== lastTopId;
-    feed.innerHTML = d.feed.map(e => `
-      <div class="event p${e.prio}">
-        <div class="t">${new Date(e.ts).toLocaleString('ru-RU')}</div>
-        <div class="m">${esc(e.title)}</div>
-        ${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ''}
-      </div>`).join('') || '<div style="color:var(--dim)">алертов нет — тишина</div>';
-
-    const maxTop = Math.max(1, ...d.top24.map(t => t.count));
-    document.getElementById('top').innerHTML = d.top24.map(t => `
-      <div class="bar-row"><span class="name">${esc(t.rule)}</span>
-      <span class="bar" style="width:${Math.round(t.count / maxTop * 90)}px"></span>
-      <span class="n">${t.count}</span></div>`).join('') || '<div style="color:var(--dim)">—</div>';
-    document.getElementById('nodes').innerHTML = d.nodes24.map(n => `
-      <div class="node-row"><span>${esc(n.node)}</span><span class="c">${n.count}</span></div>`).join('');
-
-    layoutNodes(d.nodes24.length ? d.nodes24 : [{node: '—', count: 0}]);
-    if (isNew && d.feed[0]) {
-      const node = nodes.find(n => n.node === d.feed[0].node);
-      if (node) {
-        node.last = Date.now();
-        arcs.push({from: node, t0: Date.now(), color: PRIO_COLOR[d.feed[0].prio] || '#ff7a1a'});
+    const d = await (await fetch('/api/events?hours=' + state.hours)).json();
+    const prevTop = state.events.length ? state.events[0] : null;
+    state.events = d.events; state.nowMs = d.now;
+    rebuildNodes();
+    if (state.mode === 'live') {
+      state.T = state.nowMs;
+      const fresh = d.events[0];
+      if (prevTop && fresh && (fresh.ts !== prevTop.ts || fresh.title !== prevTop.title)) {
+        fresh.flashT = performance.now();
+        const n = nodes.find(n => n.name === fresh.node);
+        if (n) n.glow = 1.5;
+        dirtyUI = 'flashFeed';
       }
-      const first = feed.querySelector('.event');
-      if (first) first.classList.add('new');
     }
-    lastTopId = freshId;
+    dirtyUI = dirtyUI || true;
+    document.getElementById('clock').textContent =
+      'обновлено ' + new Date().toLocaleTimeString('ru-RU');
   } catch (e) { /* Graylog недоступен — пробуем дальше */ }
 }
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-poll(); setInterval(poll, 10000);
+
+// ---------- правая колонка и лента ----------
+function renderUI() {
+  const T = curT();
+  const vis = state.events.filter(e => e.ts <= T);
+  document.getElementById('total').textContent = vis.length;
+  document.getElementById('range-label').textContent =
+    RANGES.find(r => r[0] === state.hours)?.[1] || state.hours + ' ч';
+
+  const prio = {1: 0, 2: 0, 3: 0}, top = {}, nc = {};
+  for (const e of vis) {
+    prio[e.prio] = (prio[e.prio] || 0) + 1;
+    top[e.title] = (top[e.title] || 0) + 1;
+    nc[e.node] = (nc[e.node] || 0) + 1;
+  }
+  document.getElementById('p3').textContent = prio[3];
+  document.getElementById('p2').textContent = prio[2];
+  document.getElementById('p1').textContent = prio[1];
+
+  const feed = document.getElementById('feed');
+  feed.innerHTML = vis.slice(0, 60).map(e => `
+    <div class="event p${e.prio}">
+      <div class="t">${new Date(e.ts).toLocaleString('ru-RU')}</div>
+      <div class="m">${esc(e.title)}</div>
+      ${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ''}
+    </div>`).join('') || '<div style="color:var(--dim)">алертов нет — тишина</div>';
+  if (dirtyUI === 'flashFeed') {
+    const first = feed.querySelector('.event');
+    if (first) first.classList.add('new');
+  }
+
+  const topArr = Object.entries(top).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const maxTop = Math.max(1, ...topArr.map(t => t[1]));
+  document.getElementById('top').innerHTML = topArr.map(([rule, count]) => `
+    <div class="bar-row"><span class="name">${esc(rule)}</span>
+    <span class="bar" style="width:${Math.round(count / maxTop * 90)}px"></span>
+    <span class="n">${count}</span></div>`).join('') || '<div style="color:var(--dim)">—</div>';
+  document.getElementById('nodes').innerHTML =
+    Object.entries(nc).sort((a, b) => b[1] - a[1]).map(([n, c]) => `
+    <div class="node-row"><span>${esc(n)}</span><span class="c">${c}</span></div>`).join('')
+    || '<div style="color:var(--dim)">—</div>';
+  dirtyUI = false;
+}
+
+// ---------- радар ----------
+function drawRadar(nowMs) {
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  const cx = W / 2, cy = H / 2;
+  const R = Math.min(cx, cy) * 0.78, dpr = devicePixelRatio;
+  const T = curT();
+
+  // луч: в эфире крутится непрерывно, в истории — позиция окна
+  const sweep = state.mode === 'live'
+    ? (nowMs % SWEEP_MS) / SWEEP_MS * 2 * Math.PI
+    : fracOf(T) * 2 * Math.PI;
+  const px = a => cx + R * Math.cos(a - Math.PI / 2);
+  const py = a => cy + R * Math.sin(a - Math.PI / 2);
+
+  // кольца и спицы
+  ctx.strokeStyle = '#1d2331'; ctx.lineWidth = dpr;
+  for (const k of [0.25, 0.5, 0.75, 1]) {
+    ctx.beginPath(); ctx.arc(cx, cy, R * k, 0, 7); ctx.stroke();
+  }
+  ctx.strokeStyle = '#181d29';
+  for (let i = 0; i < 12; i++) {
+    const a = i * Math.PI / 6;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px(a), py(a)); ctx.stroke();
+  }
+
+  // хвост луча (градиентный сектор)
+  for (let i = 0; i < 40; i++) {
+    const a = sweep - i * 0.012;
+    ctx.strokeStyle = `rgba(255,122,26,${0.30 * (1 - i / 40)})`;
+    ctx.lineWidth = 2 * dpr;
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px(a), py(a)); ctx.stroke();
+  }
+  ctx.strokeStyle = '#ff7a1a'; ctx.lineWidth = 2.5 * dpr;
+  ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = 10 * dpr;
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px(sweep), py(sweep)); ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  // центр
+  ctx.fillStyle = '#ff7a1a';
+  ctx.beginPath(); ctx.arc(cx, cy, 5 * dpr, 0, 7); ctx.fill();
+  ctx.fillStyle = '#8b93a7'; ctx.font = `${10 * dpr}px sans-serif`; ctx.textAlign = 'center';
+  ctx.fillText('Graylog', cx, cy + 16 * dpr);
+
+  // узлы: подсвечиваются, когда луч их «сканирует»
+  const counts = {};
+  for (const e of state.events) if (e.ts <= T) counts[e.node] = (counts[e.node] || 0) + 1;
+  for (const n of nodes) {
+    let d = (sweep - n.angle) % (2 * Math.PI); if (d < 0) d += 2 * Math.PI;
+    if (d < 0.06) n.glow = Math.max(n.glow, 1);
+    n.glow *= 0.97;
+    n.x = px(n.angle); n.y = py(n.angle);
+    const g = Math.min(1, n.glow);
+    ctx.fillStyle = g > 0.1 ? '#ff7a1a' : '#2a3040';
+    if (g > 0.1) { ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = 14 * g * dpr; }
+    ctx.beginPath(); ctx.arc(n.x, n.y, (7 + 4 * g) * dpr, 0, 7); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = g > 0.1 ? '#ffd8b0' : '#aab2c5';
+    ctx.font = `${11 * dpr}px sans-serif`;
+    ctx.fillText(`${n.name} (${counts[n.name] || 0})`, n.x, n.y - 14 * dpr);
+  }
+
+  // события: точки вокруг своих узлов, яркость по свежести
+  for (const e of state.events) {
+    if (e.ts > T) continue;
+    const bx = px(e.angle + e.jitA) * e.jitR + cx * (1 - e.jitR);
+    const by = py(e.angle + e.jitA) * e.jitR + cy * (1 - e.jitR);
+    const ageFrac = state.mode === 'live'
+      ? Math.min(1, (Date.now() - e.ts) / 600000)
+      : Math.min(1, (T - e.ts) / (state.nowMs - winStart()));
+    const color = PRIO_COLOR[e.prio] || '#ff7a1a';
+    ctx.globalAlpha = 1 - 0.72 * ageFrac;
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(bx, by, 3.5 * dpr, 0, 7); ctx.fill();
+    ctx.globalAlpha = 1;
+    // вспышка при появлении (эфир) или когда луч истории «прошёл» событие
+    if (e.flashT) {
+      const k = (nowMs - e.flashT) / 1200;
+      if (k < 1) {
+        ctx.strokeStyle = color; ctx.globalAlpha = 1 - k;
+        ctx.lineWidth = 2 * dpr;
+        ctx.beginPath(); ctx.arc(bx, by, (6 + 26 * k) * dpr, 0, 7); ctx.stroke();
+        ctx.globalAlpha = 1;
+      } else e.flashT = 0;
+    }
+  }
+  requestAnimationFrame(drawRadar);
+}
+
+// ---------- хронология ----------
+function setMode(m) {
+  state.mode = m; state.playing = false; playBtn.textContent = '▶';
+  liveBtn.classList.toggle('on', m === 'live');
+  slider.value = m === 'live' ? 1000 : slider.value;
+  if (m === 'live') state.T = state.nowMs;
+  dirtyUI = true;
+}
+slider.addEventListener('input', () => {
+  const start = winStart();
+  state.T = start + slider.value / 1000 * (state.nowMs - start);
+  if (state.mode !== 'hist') { state.mode = 'hist'; liveBtn.classList.remove('on'); }
+  state.playing = false; playBtn.textContent = '▶';
+  dirtyUI = true;
+});
+playBtn.addEventListener('click', () => {
+  if (state.mode !== 'hist') { state.mode = 'hist'; liveBtn.classList.remove('on'); }
+  state.playing = !state.playing;
+  if (state.playing && state.T >= state.nowMs - 1000) { // с конца — заново
+    state.T = winStart(); state.events.forEach(e => e.flashT = 0);
+  }
+  playBtn.textContent = state.playing ? '⏸' : '▶';
+});
+liveBtn.addEventListener('click', () => setMode('live'));
+
+// чипы диапазонов
+const chips = document.getElementById('chips');
+for (const [h, label] of RANGES) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  if (h === state.hours) b.classList.add('active');
+  b.onclick = async () => {
+    state.hours = h; chips.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active'); setMode('live'); slider.value = 1000;
+    state.events = []; renderUI(); await poll();
+  };
+  chips.appendChild(b);
+}
+
+// проигрывание и подписи времени
+let lastFrame = performance.now();
+function tick(nowMs) {
+  const dt = nowMs - lastFrame; lastFrame = nowMs;
+  if (state.mode === 'hist') {
+    if (state.playing) {
+      const prevT = state.T;
+      state.T = Math.min(state.nowMs, state.T + dt * (state.nowMs - winStart()) / REPLAY_MS);
+      for (const e of state.events)                    // луч «нашёл» событие
+        if (e.ts > prevT && e.ts <= state.T) e.flashT = nowMs;
+      slider.value = Math.round(fracOf(state.T) * 1000);
+      if (state.T >= state.nowMs) { state.playing = false; playBtn.textContent = '▶'; }
+      dirtyUI = true;
+    }
+    tlabel.textContent = new Date(state.T).toLocaleString('ru-RU');
+  } else {
+    tlabel.textContent = 'эфир · ' + new Date().toLocaleTimeString('ru-RU');
+  }
+  if (dirtyUI) renderUI();
+  requestAnimationFrame(tick);
+}
+
+poll().then(() => { renderUI(); });
+setInterval(() => { if (state.mode === 'live') poll(); }, 10000);
+requestAnimationFrame(drawRadar);
+requestAnimationFrame(tick);
 </script>
 </body>
 </html>
