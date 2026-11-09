@@ -3,24 +3,38 @@
 Живая карта алертов Graylog — одна страница для дежурного экрана, скринкастов
 и докладов. Обновление каждые 10 секунд.
 
+![Демо: эфир и хронология](screenshots/attackmap-demo.gif)
+
 ## Что на странице
 
 - **Поток алертов** — последние 60 событий, цветная рамка по приоритету
   (high/medium/low), деталь из исходного сообщения;
-- **Карта источников** — «радар»: узлы — платформы и свои инструменты
-  (Windows, macOS, LNX, CANARY, COWRIE...), в центре Graylog; при новом
-  алерте от узла к центру бежит дуга цвета приоритета;
-- **Правая колонка** — счётчики по приоритетам за 24 ч, топ-10 правил за
-  24 ч, активность по источникам.
+- **Радар источников** — узлы — платформы и свои инструменты
+  (Windows, macOS, LNX, CANARY, COWRIE...), в центре Graylog. Луч сканирует
+  круг по часовой стрелке: узел вспыхивает, когда луч его проходит; события —
+  точки вокруг узлов в цвете приоритета, тускнеют по мере старения, новое
+  событие даёт расходящееся кольцо;
+- **Хронология** — диапазоны 1 ч / 3 ч / 6 ч / 12 ч / 24 ч / 2 сут / 3 сут,
+  слайдер прокрутки окна и кнопка проигрывания: луч прокручивает период,
+  и события вспыхивают по мере его прохода. Кнопка «Эфир» возвращает в
+  живой режим;
+- **Правая колонка** — счётчики по приоритетам, топ-10 правил и активность
+  по источникам; в режиме истории пересчитываются на позицию слайдера.
+
+| Эфир | Хронология |
+|---|---|
+| ![Эфир](screenshots/live.png) | ![История](screenshots/history.png) |
 
 Бэкенд — Python stdlib (`http.server`), ходит в Graylog REST
-(`/api/events/search`), кеш 8 секунд. Фронт — один HTML без зависимостей.
+(`/api/events/search` с явным `timerange`), кеш 8 секунд.
+Фронт — один HTML без зависимостей; на узких экранах колонки
+складываются вертикально, радар уезжает наверх.
 
 ## Запуск (rootless podman, RED OS 8)
 
 ```bash
 mkdir -p ~/attackmap
-cp app.py index.html Containerfile ~/attackmap/
+cp app.py index.html attackmap.svg Containerfile ~/attackmap/
 printf 'GRAYLOG_USER=admin\nGRAYLOG_PASS=***\n' > ~/attackmap/attackmap.env  # не коммитить!
 chmod 600 ~/attackmap/attackmap.env
 cd ~/attackmap && podman build -t localhost/attackmap:latest .
@@ -32,6 +46,14 @@ sudo firewall-cmd --permanent --add-port=8097/tcp && sudo firewall-cmd --add-por
 
 Страница: `http://<сервер>:8097/`.
 
+## API
+
+| Метод | Назначение |
+|---|---|
+| `GET /api/events?hours=N` | события за окно N часов (1..168), до 500, свежие первыми |
+| `GET /api/overview` | legacy-сводка за 24 ч (совместимость) |
+| `GET /favicon.svg` | логотип-радар |
+
 ## Грабли
 
 - Из rootless-контейнера `https://graylog.apps.monitoring.test` недоступен
@@ -39,6 +61,8 @@ sudo firewall-cmd --permanent --add-port=8097/tcp && sudo firewall-cmd --add-por
   не совпадает) — ходим напрямую: `GRAYLOG_URL=http://host.containers.internal:9000`.
 - Учётка Graylog задаётся через `GRAYLOG_USER`/`GRAYLOG_PASS` в quadlet'е —
   для боя заведите отдельного пользователя с ролью только на чтение событий.
+- Без явного `timerange` в `events/search` Graylog возвращает неполные сутки —
+  поэтому окно задаём всегда явно.
 
 ## Настройка
 

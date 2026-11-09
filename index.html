@@ -66,6 +66,12 @@
   .node-row { display: flex; justify-content: space-between; font-size: 12.5px;
               padding: 4px 2px; border-bottom: 1px dashed #1c2130; }
   .node-row .c { color: var(--accent); font-weight: 600; }
+  @media (max-width: 1100px) {
+    body { overflow: auto; height: auto; }
+    main { grid-template-columns: 1fr; }
+    #radar-wrap { order: -1; }
+    #radar { height: 420px; flex: none; }
+  }
 </style>
 </head>
 <body>
