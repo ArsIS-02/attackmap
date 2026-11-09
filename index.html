@@ -210,7 +210,7 @@ function renderUI() {
       <div class="t">${new Date(e.ts).toLocaleString('ru-RU')}</div>
       <div class="m">${esc(e.title)}</div>
       ${e.detail ? `<div class="d">${esc(e.detail)}</div>` : ''}
-      ${e.ioc ? `<a class="bb" target="_blank" rel="noopener"
+      ${e.ioc && (e.ioc_type === 'ip' || e.ioc_type === 'domain') ? `<a class="bb" target="_blank" rel="noopener"
          href="https://blockboard.apps.monitoring.test/?block=${encodeURIComponent(e.ioc)}&reason=${encodeURIComponent('AttackMap: ' + e.title.slice(0, 80))}"
          title="Заблокировать ${esc(e.ioc)} на роутере">🛡 Заблокировать ${esc(e.ioc)}</a>` : ''}
     </div>`).join('') || '<div style="color:var(--dim)">алертов нет — тишина</div>';
